@@ -1,0 +1,159 @@
+version: "3.9"
+services:
+  # --------- Postgres 一主二从 + 同步复制 ---------
+  pg-primary:
+    image: bitnami/postgresql:16
+    container_name: pg-primary
+    env_file: .env
+    environment:
+      POSTGRESQL_REPLICATION_MODE: master
+      POSTGRESQL_REPLICATION_USER: ${POSTGRESQL_REPLICATION_USER}
+      POSTGRESQL_REPLICATION_PASSWORD: ${POSTGRESQL_REPLICATION_PASSWORD}
+      POSTGRESQL_USERNAME: ${POSTGRESQL_USERNAME}
+      POSTGRESQL_PASSWORD: ${POSTGRESQL_PASSWORD}
+      POSTGRESQL_DATABASE: ${POSTGRESQL_DATABASE}
+    ports: ["5432:5432"]
+    volumes: [pg_primary:/bitnami/postgresql]
+
+  pg-replica:
+    image: bitnami/postgresql:16
+    container_name: pg-replica
+    env_file: .env
+    environment:
+      POSTGRESQL_REPLICATION_MODE: slave
+      POSTGRESQL_MASTER_HOST: pg-primary
+      POSTGRESQL_MASTER_PORT: 5432
+      POSTGRESQL_REPLICATION_USER: ${POSTGRESQL_REPLICATION_USER}
+      POSTGRESQL_REPLICATION_PASSWORD: ${POSTGRESQL_REPLICATION_PASSWORD}
+    depends_on: [pg-primary]
+    ports: ["5433:5432"]
+    deploy:
+      replicas: 2
+
+  # --------- Redis Cluster 6 节点 ---------
+  redis-1:
+    image: ${REDIS_IMAGE}
+    container_name: redis-1
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.101
+    ports: ["6379:6379"]
+    volumes:
+      - redis_data_1:/data
+
+  redis-2:
+    image: ${REDIS_IMAGE}
+    container_name: redis-2
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.102
+    volumes:
+      - redis_data_2:/data
+
+  redis-3:
+    image: ${REDIS_IMAGE}
+    container_name: redis-3
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.103
+    volumes:
+      - redis_data_3:/data
+
+  redis-4:
+    image: ${REDIS_IMAGE}
+    container_name: redis-4
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.104
+    volumes:
+      - redis_data_4:/data
+
+  redis-5:
+    image: ${REDIS_IMAGE}
+    container_name: redis-5
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.105
+    volumes:
+      - redis_data_5:/data
+
+  redis-6:
+    image: ${REDIS_IMAGE}
+    container_name: redis-6
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.106
+    volumes:
+      - redis_data_6:/data
+
+  # helper service to bootstrap the cluster (runs once)
+  redis-bootstrap:
+    image: ${REDIS_IMAGE}
+    container_name: redis-bootstrap
+    entrypoint: ["/bin/sh","-c"]
+    command: "sleep 5 && yes yes | redis-cli --cluster create 172.28.0.101:6379 172.28.0.102:6379 172.28.0.103:6379 172.28.0.104:6379 172.28.0.105:6379 172.28.0.106:6379 --cluster-replicas 1"
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.120
+    depends_on: [redis-1,redis-2,redis-3,redis-4,redis-5,redis-6]
+
+  # --------- Zookeeper & Kafka 3 节点 ---------
+  zookeeper:
+    image: ${ZOOKEEPER_IMAGE}
+    container_name: zk-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka-1:
+    image: ${KAFKA_IMAGE}
+    container_name: kafka-1
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092,PLAINTEXT_HOST://localhost:9092
+    networks: [kafkanet]
+
+  kafka-2:
+    image: ${KAFKA_IMAGE}
+    container_name: kafka-2
+    environment:
+      KAFKA_BROKER_ID: 2
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9092,PLAINTEXT_HOST://localhost:9093
+    networks: [kafkanet]
+
+  kafka-3:
+    image: ${KAFKA_IMAGE}
+    container_name: kafka-3
+    environment:
+      KAFKA_BROKER_ID: 3
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9092,PLAINTEXT_HOST://localhost:9094
+    networks: [kafkanet]
+
+volumes:
+  pg_primary:
+  redis_data_1:
+  redis_data_2:
+  redis_data_3:
+  redis_data_4:
+  redis_data_5:
+  redis_data_6:
+
+networks:
+  redisnet:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+  kafkanet:
+    driver: bridge

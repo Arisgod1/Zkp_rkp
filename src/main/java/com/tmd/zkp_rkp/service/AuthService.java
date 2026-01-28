@@ -5,6 +5,7 @@ import com.tmd.zkp_rkp.entity.UserCredentials;
 import com.tmd.zkp_rkp.repository.UserCredentialsRepository;
 import com.tmd.zkp_rkp.service.crypto.ZkpService;
 import com.tmd.zkp_rkp.service.kafka.AuthEventPublisher;
+import com.tmd.zkp_rkp.util.JwtUtil;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -29,9 +30,8 @@ public class AuthService {
     private final UserCredentialsRepository userRepo;
     private final ZkpService zkpService;
     private final AuthEventPublisher eventPublisher;
-    /**
-     * 用户注册 - 存储公钥
-     */
+    private final JwtUtil jwtUtil;
+
     @Transactional
     public Mono<Void> register(AuthDTOs.RegisterRequest req) {
         return Mono.fromCallable(() -> userRepo.existsByUsername(req.username()))
@@ -41,11 +41,14 @@ public class AuthService {
                         return Mono.error(new IllegalArgumentException("Username already exists"));
                     }
 
-                    // 验证公钥格式
+                    // 验证公钥格式（确保是合法的大数）
                     BigInteger Y;
                     try {
                         Y = new BigInteger(req.publicKeyY(), 16);
-                        // 可选：验证 Y 在合法范围内
+                        // 可选：验证 Y 在 [2, p-2] 范围内
+                        if (Y.compareTo(BigInteger.TWO) < 0) {
+                            return Mono.error(new IllegalArgumentException("Public key too small"));
+                        }
                     } catch (NumberFormatException e) {
                         return Mono.error(new IllegalArgumentException("Invalid public key format"));
                     }
@@ -60,7 +63,6 @@ public class AuthService {
                             .subscribeOn(Schedulers.boundedElastic())
                             .flatMap(saved -> {
                                 log.info("User registered: {}", req.username());
-                                // 发送 Kafka 事件
                                 return eventPublisher.publishUserRegistered(
                                         saved.getId(),
                                         saved.getUsername(),
@@ -70,77 +72,64 @@ public class AuthService {
                 });
     }
 
-    /**
-     * 生成登录挑战
-     */
     public Mono<AuthDTOs.ChallengeResponse> createChallenge(AuthDTOs.ChallengeRequest req) {
-        return Mono.fromCallable(() -> userRepo.findByUsername(req.username()))
-                .subscribeOn(Schedulers.boundedElastic())
-                .flatMap(optUser -> {
-                    if (optUser.isEmpty()) {
-                        // 安全考虑：即使用户不存在也生成假挑战，防止用户名枚举攻击
-                        return zkpService.generateChallenge(req.username())
-                                .map(AuthDTOs.ChallengeResponse::fromServiceRecord)
-                                .onErrorResume(e -> {
-                                    // 记录但不暴露
-                                    log.warn("Challenge generation for non-existent user: {}", req.username());
-                                    return Mono.error(new IllegalArgumentException("User not found"));
-                                });
-                    }
-                    return zkpService.generateChallenge(req.username())
-                            .map(AuthDTOs.ChallengeResponse::fromServiceRecord);
+        // 即使不存在用户名也生成假挑战（防枚举攻击）
+        return zkpService.generateChallenge(req.username())
+                .map(AuthDTOs.ChallengeResponse::fromServiceRecord)
+                .onErrorResume(e -> {
+                    log.error("Challenge generation failed", e);
+                    return Mono.error(new RuntimeException("Service temporarily unavailable"));
                 });
     }
 
-    /**
-     * 验证 ZKP 并登录
-     */
     @Transactional
     public Mono<AuthDTOs.AuthResponse> verifyAndLogin(AuthDTOs.VerifyRequest req) {
-        // 先根据 challengeId 解析出 username（从 Redis 中）
-        // 注意：这里简化处理，实际需要优化流程
-        return Mono.fromCallable(() -> userRepo.findByUsername(
-                        extractUsernameFromChallenge(req.challengeId()))) // 需要修改 ZkpService 暴露查询方法
-                .subscribeOn(Schedulers.boundedElastic())
-                .flatMap(optUser -> {
-                    if (optUser.isEmpty()) {
-                        return Mono.error(new IllegalArgumentException("Invalid challenge"));
-                    }
+        // Step 1: 从 challengeId 获取 username 和验证数据
+        return zkpService.getChallengeData(req.challengeId())
+                .flatMap(challengeData -> {
+                    String username = challengeData.username();
 
-                    UserCredentials user = optUser.get();
-                    BigInteger Y = user.getPublicKeyYAsBigInteger();
-
-                    return zkpService.verifyProof(req.challengeId(), req.toProof(), Y)
-                            .flatMap(valid -> {
-                                if (!valid) {
-                                    return eventPublisher.publishLoginFailed(user.getUsername(), "Invalid proof")
+                    // Step 2: 查询用户公钥
+                    return Mono.fromCallable(() -> userRepo.findByUsername(username))
+                            .subscribeOn(Schedulers.boundedElastic())
+                            .flatMap(optUser -> {
+                                if (optUser.isEmpty()) {
+                                    // 用户不存在（可能是之前生成的假挑战）
+                                    return eventPublisher.publishLoginFailed(username, "User not found")
                                             .then(Mono.error(new SecurityException("Authentication failed")));
                                 }
 
-                                // 更新最后登录时间
-                                return Mono.fromRunnable(() ->
-                                                userRepo.updateLastLoginTime(user.getUsername(), LocalDateTime.now())
-                                        ).subscribeOn(Schedulers.boundedElastic())
-                                        .then(eventPublisher.publishLoginSuccess(user.getUsername()))
-                                        .thenReturn(generateToken(user));
+                                UserCredentials user = optUser.get();
+                                BigInteger Y = user.getPublicKeyYAsBigInteger();
+
+                                // Step 3: 验证 ZKP
+                                return zkpService.verifyProof(req.challengeId(), req.toProof(), Y)
+                                        .flatMap(valid -> {
+                                            if (!valid) {
+                                                return eventPublisher.publishLoginFailed(user.getUsername(), "Invalid proof")
+                                                        .then(Mono.error(new SecurityException("Authentication failed")));
+                                            }
+
+                                            // Step 4: 更新登录时间并生成 Token
+                                            return Mono.fromRunnable(() ->
+                                                            userRepo.updateLastLoginTime(user.getUsername(), LocalDateTime.now())
+                                                    ).subscribeOn(Schedulers.boundedElastic())
+                                                    .then(eventPublisher.publishLoginSuccess(user.getUsername()))
+                                                    .thenReturn(generateAuthResponse(user));
+                                        });
                             });
                 });
     }
 
-    private AuthDTOs.AuthResponse generateToken(UserCredentials user) {
-        // TODO: 实际项目中集成 JWT,待会再整
-        String token = UUID.randomUUID().toString(); // 临时模拟
+    private AuthDTOs.AuthResponse generateAuthResponse(UserCredentials user) {
+        String token = jwtUtil.generateToken(user.getUsername());
+        long expiresIn = 86400; // 24小时，与JwtUtil配置同步
+
         return new AuthDTOs.AuthResponse(
                 token,
                 "Bearer",
                 user.getUsername(),
-                Duration.ofHours(24).getSeconds()
+                expiresIn
         );
-    }
-
-    // 临时方案：需要从 Redis 获取 challenge 中的 username，实际项目中应该重构 ZkpService 暴露一个查询方法hh
-    private String extractUsernameFromChallenge(String challengeId) {
-        // 这里需要通过 ZkpService 查询，代码略
-        return "username";
     }
 }

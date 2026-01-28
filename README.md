@@ -101,53 +101,70 @@ graph TB
 ### 1. 启动基础设施
 
 ```bash
-# 克隆项目后，确保 .env 文件存在
+# 1.Springboot标准打包
+mvn clean package -DskipTests   
+# 2. 配置环境变量
 cp .env.example .env
+# 编辑 .env
+# 3. 构建应用镜像并启动所有服务（首次约3-无限分钟，看你的网络情况hh）
+docker compose up --build
 
-# 启动所有服务（PostgreSQL主从 + Redis集群 + Kafka集群）
-docker-compose up -d
-
-# 等待 30 秒让集群初始化
-docker logs redis-bootstrap  # 应显示 "[OK] All 16384 slots covered"
-docker logs kafka-1          # 应显示 "[KafkaServer id=1] started"
+# 4. 等待健康检查通过（约30秒）
+docker compose logs -f zkp-auth | grep "Started ZkpAuthApplication"
 ```
 
 ### 2. 启动应用
 
 ```bash
-# Springboot和中间件分别运行
-./mvnw spring-boot:run -Dspring-boot.run.profiles=local
 docker-compose up --build
 ```
 
-### 3. 测试验证
+### 3. 验证并登录（Verify）
+
+客户端使用私钥计算 $s = r + c \cdot x \mod q$ 后提交：
 
 ```bash
-# 1. 注册（客户端生成密钥对，仅传输公钥）
-curl -X POST http://localhost:8080/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "username": "alice",
-    "publicKeyY": "a1b2c3...",  # 十六进制公钥 Y = g^x mod p
-    "salt": "random_salt_123"
-  }'
-
-# 2. 获取挑战值
-curl -X POST http://localhost:8080/api/v1/auth/challenge \
-  -H "Content-Type: application/json" \
-  -d '{"username": "alice"}'
-# 返回: {"challengeId":"uuid","R":"...","p":"...","q":"...","g":"..."}
-
-# 3. 计算并提交证明（客户端用私钥计算 s = r + c*x）
 curl -X POST http://localhost:8080/api/v1/auth/verify \
-  -H "Content-Type: application/json" \
   -d '{
-    "challengeId": "uuid-from-step-2",
-    "s": "deadbeef...",      # 证明值 s
-    "clientR": "cafe1234..." # 承诺值 R
+    "challengeId": "<上一步的uuid>",
+    "s": "<证明值s，十六进制>",
+    "clientR": "<承诺值R，十六进制>"
   }'
-# 返回: {"token":"jwt-token","type":"Bearer","expiresIn":86400}
 ```
+
+**成功返回 JWT**：
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiJ9...",
+  "type": "Bearer",
+  "expiresIn": 86400
+}
+```
+
+---
+
+## ⚙️ 容器内网络配置
+
+Spring Boot 应用通过**Docker DNS**访问基础设施（无需 localhost）：
+
+```yaml
+# application.yaml（容器内配置）
+spring:
+  datasource:
+    url: jdbc:postgresql://pg-primary:5432/zk_auth  # 容器名而非 localhost
+  data:
+    redis:
+      cluster:
+        nodes: 172.28.0.101:6379,172.28.0.102:6379,... # Redis使用静态IP
+  kafka:
+    bootstrap-servers: kafka-1:19092,kafka-2:29092,kafka-3:39092 # 内部PLAINTEXT端口
+```
+
+### 端口暴露说明
+
+- **对外暴露**：`8080`（API）、`5432-5434`（PostgreSQL，开发调试用）、`6379-6384`（Redis）、`9092-9094`（Kafka）
+- **仅内部网络**：所有服务通过 Docker Network `redisnet` / `kafkanet` / 默认桥接通信
+
 
 ---
 
@@ -156,27 +173,32 @@ curl -X POST http://localhost:8080/api/v1/auth/verify \
 ```
 src/main/java/com/tmd/zkp_rkp/
 ├── config/
-│   ├── ZkpCryptoConfig.java          # Schnorr 群参数配置 (p, q, g)
-│   ├── RedisConfig.java              # Redis Cluster 序列化配置
-│   └── SecurityConfig.java           # CORS 与安全头配置
+│   ├── ZkpCryptoConfig.java          # Schnorr 群参数 (p, q, g) 与 Bean 配置
+│   ├── RedisConfig.java              # Reactive Redis Cluster 连接池
+│   └── KafkaProducerConfig.java      # Kafka 生产者序列化配置
 ├── controller/
-│   └── AuthController.java           # REST API 端点 (register/challenge/verify)
+│   └── AuthController.java           # REST API 端点 (/register, /challenge, /verify)
 ├── dto/
-│   └── AuthDTOs.java                 # Record: Request/Response DTOs
+│   └── AuthDTOs.java                 # Java 17 Record 定义（请求/响应 DTO）
 ├── entity/
-│   └── UserCredentials.java          # JPA 实体 (仅存储公钥 Y, salt)
+│   └── UserCredentials.java          # JPA 实体（username, publicKeyY, salt, lastLoginAt）
 ├── repository/
-│   └── UserCredentialsRepository.java # Spring Data JPA
+│   └── UserCredentialsRepository.java # 数据库访问（检查存在性、更新登录时间）
 ├── service/
-│   ├── AuthService.java              # 业务逻辑编排
+│   ├── AuthService.java              # 业务编排（注册、挑战发放、验证登录）
 │   ├── crypto/
-│   │   └── ZkpService.java           # 核心：Schnorr 挑战生成与验证
-│   └── kafka/
-│       └── AuthEventPublisher.java   # 审计事件发布
+│   │   └── ZkpService.java           # 核心：Schnorr 挑战生成、验证方程计算
+│   ├── kafka/
+│   │   └── AuthEventPublisher.java   # 异步发送登录审计事件
+│   └── util/
+│       └── JwtUtil.java              # JWT Token 生成与解析（JJWT 0.11.5）
+├── exception/
+│   └── GlobalExceptionHandler.java   # 全局异常处理（屏蔽敏感信息）
 └── ZkpAuthApplication.java
 
-docker-compose.yml                    # 基础设施编排 (PG主从+Redis集群+Kafka)
-application.yaml                      # Spring 配置 (连接池、集群节点地址)
+docker-compose.yml                    # 基础设施编排（PG主从+Redis集群+Kafka KRaft）
+.env.example                          # 环境变量模板
+application.yaml                      # Spring 配置
 ```
 
 ---
@@ -256,51 +278,44 @@ zkp:
 ### JavaScript/TypeScript 客户端 SDK 伪代码
 
 ```typescript
-import { BigInteger } from 'jsbn';
-import { SecureRandom } from 'jsbn';
+const crypto = require('crypto');
+const BigInteger = require('jsbn').BigInteger;
 
-class ZkpClient {
-  private group = {
-    p: new BigInteger("FFFFFFFFFFFFFFFF...", 16), // 来自服务端 /challenge
-    q: new BigInteger("7FFFFFFFFFFFFFFFFF...", 16),
-    g: new BigInteger("2")
-  };
+const P = new BigInteger('FFFFFFFFFFFFFFFF...', 16);
+const Q = new BigInteger('7FFFFFFFFFFFFFFFF...', 16);
+const G = new BigInteger('2');
 
-  // 注册时生成密钥对（仅需执行一次）
-  generateKeyPair() {
-    const x = new BigInteger(this.group.q.bitLength(), new SecureRandom())
-                .mod(this.group.q.subtract(BigInteger.ONE))
-                .add(BigInteger.ONE); // 私钥
-    const Y = this.group.g.modPow(x, this.group.p); // 公钥
-    return { privateKey: x.toString(16), publicKey: Y.toString(16) };
-  }
+function sha256(data) {
+    return crypto.createHash('sha256').update(data).digest();
+}
 
-  // 登录时生成证明
-  async generateProof(privateKeyHex: string, challenge: any) {
+function generateProof(privateKeyHex, challenge, username) {
     const x = new BigInteger(privateKeyHex, 16);
     const R = new BigInteger(challenge.R, 16);
-    const Y = this.group.g.modPow(x, this.group.p);
+    const Y = G.modPow(x, P);
     
-    // 模拟客户端随机数（实际为服务端 R，或客户端生成新的 r'）
-    // 注意：此简化版直接使用服务端 R，生产环境应使用 Commitment 扩展
-    const c = this.hash(R, Y, challenge.username); // SHA-256
-    const s = new BigInteger(challenge.r).add(c.multiply(x)).mod(this.group.q);
+    // 计算 c = H(R || Y || username)
+    const hashInput = Buffer.concat([
+        Buffer.from(R.toByteArray()),
+        Buffer.from(Y.toByteArray()),
+        Buffer.from(username, 'utf8')
+    ]);
+    const c = new BigInteger(sha256(hashInput).toString('hex'), 16).mod(Q);
     
-    return { s: s.toString(16), clientR: challenge.R };
-  }
-  
-  hash(R: BigInteger, Y: BigInteger, username: string) {
-    // SHA-256(R || Y || username) mod q
-    const sha256 = require('crypto').createHash('sha256');
-    sha256.update(R.toString(16) + Y.toString(16) + username);
-    return new BigInteger(sha256.digest('hex'), 16).mod(this.group.q);
-  }
+    // 注意：此处需要根据具体协议实现计算 s
+    // 本系统要求客户端计算 s，但具体算法取决于协议变体
+    
+    return {
+        challengeId: challenge.challengeId,
+        s: s.toString(16),
+        clientR: challenge.R  // 必须原样返回服务端提供的 R
+    };
 }
 ```
 
 ---
 
-## 📊 性能指标（预估）
+## 📊 性能指标（在测呢）
 
 | 指标 | 数值 | 说明 |
 |------|------|------|
@@ -318,6 +333,7 @@ A: 这是 Redis 8.4 的 RedisSearch 模块在集群初始化前的正常警告�
 
 **Q: 为什么私钥不能找回？**  
 A: 零知识证明的本质是服务端不存储任何可推导私钥的信息。如果用户丢失私钥，只能：
+
 1. 通过预存的备用验证方式（如邮箱/手机）重置
 2. 重新注册生成新密钥对（旧账户数据需手动迁移）
 3. 当然，本项目是没有这些备用手段的，男儿当自强！

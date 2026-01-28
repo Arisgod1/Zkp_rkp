@@ -84,11 +84,6 @@
             <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
         </dependency>
 
-        <!-- Kafka 批量 + 异步 -->
-        <dependency>
-            <groupId>org.springframework.kafka</groupId>
-            <artifactId>spring-kafka</artifactId>
-        </dependency>
 
         <!-- 本地缓存 Caffeine -->
         <dependency>
@@ -98,10 +93,6 @@
         </dependency>
 
         <!-- 连接池 -->
-        <dependency>
-            <groupId>org.postgresql</groupId>
-            <artifactId>postgresql</artifactId>
-        </dependency>
         <dependency>
             <groupId>com.zaxxer</groupId>
             <artifactId>HikariCP</artifactId>

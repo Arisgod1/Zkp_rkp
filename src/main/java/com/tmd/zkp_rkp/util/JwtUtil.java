@@ -42,10 +42,10 @@ public class JwtUtil {
         Date validity = new Date(now.getTime() + expiration);
 
         return Jwts.builder()
-                .setClaims(claims)
-                .setSubject(subject)
-                .setIssuedAt(now)
-                .setExpiration(validity)
+                .claims(claims)
+                .subject(subject)
+                .issuedAt(now)
+                .expiration(validity)
                 .signWith(getSigningKey())
                 .compact();
     }

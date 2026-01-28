@@ -1,157 +1,290 @@
-version: "3.9"
 services:
-  # --------- Postgres 一主二从 + 同步复制 ---------
+  # --------- PostgreSQL 一主二从 ---------
   pg-primary:
-    image: bitnami/postgresql:16
+    image: ${PROTGRESQL_IMAGE:-bitnami/postgresql:16}
     container_name: pg-primary
     env_file: .env
     environment:
       POSTGRESQL_REPLICATION_MODE: master
-      POSTGRESQL_REPLICATION_USER: ${POSTGRESQL_REPLICATION_USER}
-      POSTGRESQL_REPLICATION_PASSWORD: ${POSTGRESQL_REPLICATION_PASSWORD}
-      POSTGRESQL_USERNAME: ${POSTGRESQL_USERNAME}
-      POSTGRESQL_PASSWORD: ${POSTGRESQL_PASSWORD}
-      POSTGRESQL_DATABASE: ${POSTGRESQL_DATABASE}
-    ports: ["5432:5432"]
-    volumes: [pg_primary:/bitnami/postgresql]
+      POSTGRESQL_REPLICATION_USER: ${POSTGRESQL_REPLICATION_USER:-repl}
+      POSTGRESQL_REPLICATION_PASSWORD: ${POSTGRESQL_REPLICATION_PASSWORD:-repl123}
+      POSTGRESQL_USERNAME: ${POSTGRESQL_USERNAME:-zkuser}
+      POSTGRESQL_PASSWORD: ${POSTGRESQL_PASSWORD:-zkpass_1314217}
+      POSTGRESQL_DATABASE: ${POSTGRESQL_DATABASE:-zk_auth}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_primary:/bitnami/postgresql
 
-  pg-replica:
-    image: bitnami/postgresql:16
-    container_name: pg-replica
+  pg-replica-1:
+    image: ${PROTGRESQL_IMAGE:-bitnami/postgresql:16}
+    container_name: pg-replica-1
     env_file: .env
     environment:
       POSTGRESQL_REPLICATION_MODE: slave
       POSTGRESQL_MASTER_HOST: pg-primary
       POSTGRESQL_MASTER_PORT: 5432
-      POSTGRESQL_REPLICATION_USER: ${POSTGRESQL_REPLICATION_USER}
-      POSTGRESQL_REPLICATION_PASSWORD: ${POSTGRESQL_REPLICATION_PASSWORD}
-    depends_on: [pg-primary]
-    ports: ["5433:5432"]
-    deploy:
-      replicas: 2
+      POSTGRESQL_REPLICATION_USER: ${POSTGRESQL_REPLICATION_USER:-repl}
+      POSTGRESQL_REPLICATION_PASSWORD: ${POSTGRESQL_REPLICATION_PASSWORD:-repl123}
+    depends_on:
+      - pg-primary
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg_replica_1:/bitnami/postgresql
 
-  # --------- Redis Cluster 6 节点 ---------
+  pg-replica-2:
+    image: ${PROTGRESQL_IMAGE:-bitnami/postgresql:16}
+    container_name: pg-replica-2
+    env_file: .env
+    environment:
+      POSTGRESQL_REPLICATION_MODE: slave
+      POSTGRESQL_MASTER_HOST: pg-primary
+      POSTGRESQL_MASTER_PORT: 5432
+      POSTGRESQL_REPLICATION_USER: ${POSTGRESQL_REPLICATION_USER:-repl}
+      POSTGRESQL_REPLICATION_PASSWORD: ${POSTGRESQL_REPLICATION_PASSWORD:-repl123}
+    depends_on:
+      - pg-primary
+    ports:
+      - "5434:5432"
+    volumes:
+      - pg_replica_2:/bitnami/postgresql
+
+  # --------- Redis Cluster (6 节点) ---------
   redis-1:
-    image: ${REDIS_IMAGE}
+    image: ${REDIS_IMAGE:-redis:8.4}
     container_name: redis-1
-    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --port 6379
     networks:
       redisnet:
         ipv4_address: 172.28.0.101
-    ports: ["6379:6379"]
+    ports:
+      - "6379:6379"
     volumes:
       - redis_data_1:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
 
   redis-2:
-    image: ${REDIS_IMAGE}
+    image: ${REDIS_IMAGE:-redis:8.4}
     container_name: redis-2
-    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --port 6379
     networks:
       redisnet:
         ipv4_address: 172.28.0.102
+    ports:
+      - "6380:6379"
     volumes:
       - redis_data_2:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
 
   redis-3:
-    image: ${REDIS_IMAGE}
+    image: ${REDIS_IMAGE:-redis:8.4}
     container_name: redis-3
-    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --port 6379
     networks:
       redisnet:
         ipv4_address: 172.28.0.103
+    ports:
+      - "6381:6379"
     volumes:
       - redis_data_3:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
 
   redis-4:
-    image: ${REDIS_IMAGE}
+    image: ${REDIS_IMAGE:-redis:8.4}
     container_name: redis-4
-    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --port 6379
     networks:
       redisnet:
         ipv4_address: 172.28.0.104
+    ports:
+      - "6382:6379"
     volumes:
       - redis_data_4:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
 
   redis-5:
-    image: ${REDIS_IMAGE}
+    image: ${REDIS_IMAGE:-redis:8.4}
     container_name: redis-5
-    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --port 6379
     networks:
       redisnet:
         ipv4_address: 172.28.0.105
+    ports:
+      - "6383:6379"
     volumes:
       - redis_data_5:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
 
   redis-6:
-    image: ${REDIS_IMAGE}
+    image: ${REDIS_IMAGE:-redis:8.4}
     container_name: redis-6
-    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf
+    command: redis-server --cluster-enabled yes --cluster-config-file nodes.conf --cluster-node-timeout 5000 --appendonly yes --port 6379
     networks:
       redisnet:
         ipv4_address: 172.28.0.106
+    ports:
+      - "6384:6379"
     volumes:
       - redis_data_6:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
 
-  # helper service to bootstrap the cluster (runs once)
   redis-bootstrap:
-    image: ${REDIS_IMAGE}
+    image: ${REDIS_IMAGE:-redis:8.4}
     container_name: redis-bootstrap
-    entrypoint: ["/bin/sh","-c"]
-    command: "sleep 5 && yes yes | redis-cli --cluster create 172.28.0.101:6379 172.28.0.102:6379 172.28.0.103:6379 172.28.0.104:6379 172.28.0.105:6379 172.28.0.106:6379 --cluster-replicas 1"
+    # Windows 必须使用单行命令，避免换行符解析错误
+    command: >
+      sh -c "sleep 25 && 
+      redis-cli --cluster create 
+      172.28.0.101:6379 172.28.0.102:6379 172.28.0.103:6379 
+      172.28.0.104:6379 172.28.0.105:6379 172.28.0.106:6379 
+      --cluster-replicas 1 --cluster-yes"
     networks:
       redisnet:
         ipv4_address: 172.28.0.120
-    depends_on: [redis-1,redis-2,redis-3,redis-4,redis-5,redis-6]
+    depends_on:
+      redis-1:
+        condition: service_healthy
+      redis-2:
+        condition: service_healthy
+      redis-3:
+        condition: service_healthy
+      redis-4:
+        condition: service_healthy
+      redis-5:
+        condition: service_healthy
+      redis-6:
+        condition: service_healthy
 
-  # --------- Zookeeper & Kafka 3 节点 ---------
-  zookeeper:
-    image: ${ZOOKEEPER_IMAGE}
-    container_name: zk-zookeeper
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-
+  # --------- Kafka 4.0 KRaft 模式 (3 节点) ---------
   kafka-1:
-    image: ${KAFKA_IMAGE}
+    image: ${KAFKA_IMAGE:-apache/kafka:4.0.0}
     container_name: kafka-1
+    user: "0:0"
+    hostname: kafka-1
+    ports:
+      - "9092:9092"
+      - "19093:19093"
     environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092,PLAINTEXT_HOST://localhost:9092
-    networks: [kafkanet]
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:19093,2@kafka-2:29093,3@kafka-3:39093
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-MkU3OEVBNTcwNTJENDM2Qk}
+      KAFKA_LISTENERS: PLAINTEXT://kafka-1:19092,CONTROLLER://kafka-1:19093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:19092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka_data_1:/tmp/kraft-combined-logs
 
   kafka-2:
-    image: ${KAFKA_IMAGE}
+    image: ${KAFKA_IMAGE:-apache/kafka:4.0.0}
     container_name: kafka-2
+    user: "0:0"
+    hostname: kafka-2
+    ports:
+      - "9093:9093"
+      - "29093:29093"
     environment:
-      KAFKA_BROKER_ID: 2
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9092,PLAINTEXT_HOST://localhost:9093
-    networks: [kafkanet]
+      KAFKA_NODE_ID: 2
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:19093,2@kafka-2:29093,3@kafka-3:39093
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-MkU3OEVBNTcwNTJENDM2Qk}
+      KAFKA_LISTENERS: PLAINTEXT://kafka-2:29092,CONTROLLER://kafka-2:29093,PLAINTEXT_HOST://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:29092,PLAINTEXT_HOST://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka_data_2:/tmp/kraft-combined-logs
 
   kafka-3:
-    image: ${KAFKA_IMAGE}
+    image: ${KAFKA_IMAGE:-apache/kafka:4.0.0}
     container_name: kafka-3
+    user: "0:0"
+    hostname: kafka-3
+    ports:
+      - "9094:9094"
+      - "39093:39093"
     environment:
-      KAFKA_BROKER_ID: 3
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9092,PLAINTEXT_HOST://localhost:9094
-    networks: [kafkanet]
+      KAFKA_NODE_ID: 3
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:19093,2@kafka-2:29093,3@kafka-3:39093
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-MkU3OEVBNTcwNTJENDM2Qk}
+      KAFKA_LISTENERS: PLAINTEXT://kafka-3:39092,CONTROLLER://kafka-3:39093,PLAINTEXT_HOST://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:39092,PLAINTEXT_HOST://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka_data_3:/tmp/kraft-combined-logs
 
 volumes:
   pg_primary:
+  pg_replica_1:
+  pg_replica_2:
   redis_data_1:
   redis_data_2:
   redis_data_3:
   redis_data_4:
   redis_data_5:
   redis_data_6:
+  kafka_data_1:
+  kafka_data_2:
+  kafka_data_3:
 
 networks:
   redisnet:
+    driver: bridge
     ipam:
       config:
         - subnet: 172.28.0.0/24

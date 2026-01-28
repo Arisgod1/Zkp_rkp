@@ -11,4 +11,7 @@ public class ZkpValue {
     // 挑战存储前缀
     public static final String CHALLENGE_PREFIX = "zkp:challenge:";
     public static final Duration CHALLENGE_TTL = Duration.ofMinutes(5);
+
+    //kafka
+    public static final String TOPIC_AUTH_EVENTS = "auth-events";
 }

@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
@@ -140,31 +141,36 @@ public class ZkpService {
                     // 使用存储的 c 值进行验证（不再重新计算，确保一致性）
 
                     // Schnorr 验证方程: g^s == R * Y^c (mod p)
-                    BigInteger leftSide = group.g().modPow(proof.s(), group.p());
-                    BigInteger Yc = publicKeyY.modPow(c, group.p());
-                    BigInteger rightSide = proof.clientR().multiply(Yc).mod(group.p());
+                    // 将耗时的模幂运算放到弹性线程池中执行，避免阻塞事件循环
+                    return Mono.fromCallable(() -> {
+                        BigInteger leftSide = group.g().modPow(proof.s(), group.p());
+                        BigInteger Yc = publicKeyY.modPow(c, group.p());
+                        BigInteger rightSide = proof.clientR().multiply(Yc).mod(group.p());
+                        boolean valid = leftSide.equals(rightSide);
 
-                    boolean valid = leftSide.equals(rightSide);
+                        // Debug logging
+                        log.debug("ZKP Verification Debug for user: {}", storedUsername);
+                        log.debug("  R (stored): {}", R.toString(16).substring(0, 32) + "...");
+                        log.debug("  Y: {}", publicKeyY.toString(16).substring(0, 32) + "...");
+                        log.debug("  c (stored): {}", c.toString(16).substring(0, 32) + "...");
+                        log.debug("  s: {}", proof.s().toString(16).substring(0, 32) + "...");
+                        log.debug("  leftSide (g^s): {}", leftSide.toString(16).substring(0, 32) + "...");
+                        log.debug("  rightSide (R*Y^c): {}", rightSide.toString(16).substring(0, 32) + "...");
+                        log.debug("  valid: {}", valid);
 
-                    // Debug logging
-                    log.debug("ZKP Verification Debug for user: {}", storedUsername);
-                    log.debug("  R (stored): {}", R.toString(16).substring(0, 32) + "...");
-                    log.debug("  Y: {}", publicKeyY.toString(16).substring(0, 32) + "...");
-                    log.debug("  c (stored): {}", c.toString(16).substring(0, 32) + "...");
-                    log.debug("  s: {}", proof.s().toString(16).substring(0, 32) + "...");
-                    log.debug("  leftSide (g^s): {}", leftSide.toString(16).substring(0, 32) + "...");
-                    log.debug("  rightSide (R*Y^c): {}", rightSide.toString(16).substring(0, 32) + "...");
-                    log.debug("  valid: {}", valid);
-
-                    if (valid) {
-                        log.debug("ZKP verified for user: {}", storedUsername);
-                        // 验证成功后删除挑战（防重放）
-                        return redisTemplate.delete(CHALLENGE_PREFIX + challengeId)
-                                .thenReturn(true);
-                    } else {
-                        log.warn("ZKP verification failed for user: {}", storedUsername);
-                        return Mono.just(false);
-                    }
+                        return valid;
+                    }).subscribeOn(Schedulers.boundedElastic())
+                    .flatMap(valid -> {
+                        if (valid) {
+                            log.debug("ZKP verified for user: {}", storedUsername);
+                            // 验证成功后删除挑战（防重放）
+                            return redisTemplate.delete(CHALLENGE_PREFIX + challengeId)
+                                    .thenReturn(true);
+                        } else {
+                            log.warn("ZKP verification failed for user: {}", storedUsername);
+                            return Mono.just(false);
+                        }
+                    });
                 })
                 .switchIfEmpty(Mono.error(new IllegalStateException("Challenge expired or not found")));
     }

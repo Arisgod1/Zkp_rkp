@@ -25,10 +25,12 @@ spring:
       port: ${SPRING_REDIS_PORT:6379}
       lettuce:
         pool:
-          max-active: 8
-          max-idle: 20
-          min-idle: 5
-      timeout: 2000ms
+          max-active: 50
+          max-idle: 30
+          min-idle: 10
+          max-wait: 5000ms
+        shutdown-timeout: 200ms
+      timeout: 10000ms
       # 如有密码取消注释
       # password: ${SPRING_REDIS_PASSWORD:}
 
@@ -51,6 +53,13 @@ jwt:
   # Base64编码的256位密钥 (至少32字节)
   secret: ${JWT_SECRET:Y29tcGxleC1zZWNyZXQta2V5LXRoYXQtaXMtbG9uZy1lbm91Z2gtZm9yLWpqd3QtbWV0aG9k}
   expiration: 86400000  # 24小时，单位毫秒
+
+# Reactor 弹性线程池配置（用于执行耗时加密运算）
+reactor:
+  schedulers:
+    boundedElastic:
+      threadCap: 100
+      queueCap: 100000
 
 logging:
   level:

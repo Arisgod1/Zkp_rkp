@@ -1,0 +1,19 @@
+{
+  "name": "zkp-pressure-test",
+  "version": "1.0.0",
+  "description": "ZKP Authentication System Pressure Testing Suite",
+  "main": "tests/simple_e2e_test.js",
+  "scripts": {
+    "test:e2e": "node tests/simple_e2e_test.js",
+    "test:register": "node tests/register_test.js",
+    "test:login": "node tests/login_test.js",
+    "test:full": "node tests/full_flow_test.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "jsbn": "^1.1.0"
+  },
+  "keywords": ["zkp", "schnorr", "pressure-test", "authentication", "zero-knowledge-proof"],
+  "author": "ZKP Team",
+  "license": "MIT"
+}

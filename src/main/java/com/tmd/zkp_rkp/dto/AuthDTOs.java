@@ -32,7 +32,11 @@ public class AuthDTOs {
 
     public record ChallengeRequest(
             @NotBlank(message = "用户名不能为空")
-            String username
+            String username,
+
+            @NotBlank(message = "承诺值R不能为空")
+            @Pattern(regexp = "^[0-9A-Fa-f]+$", message = "R必须是十六进制")
+            String clientR // 客户端生成的承诺值 R = g^r mod p
     ) {
     }
 
@@ -46,12 +50,16 @@ public class AuthDTOs {
 
             @NotBlank(message = "承诺值R不能为空")
             @Pattern(regexp = "^[0-9A-Fa-f]+$", message = "R必须是十六进制")
-            String clientR // 承诺值 R = g^r mod p
+            String clientR, // 承诺值 R = g^r mod p
+
+            @NotBlank(message = "用户名不能为空")
+            String username
     ) {
         public com.tmd.zkp_rkp.service.crypto.ZkpService.SchnorrProof toProof() {
             return new com.tmd.zkp_rkp.service.crypto.ZkpService.SchnorrProof(
                     new BigInteger(s, 16),
-                    new BigInteger(clientR, 16)
+                    new BigInteger(clientR, 16),
+                    username
             );
         }
     }
@@ -60,7 +68,7 @@ public class AuthDTOs {
 
     public record ChallengeResponse(
             String challengeId,
-            String R,          // 十六进制
+            String c,          // 挑战值 c = H(R || Y || username) 十六进制
             String p,          // 十六进制
             String q,          // 十六进制
             String g           // 十六进制
@@ -69,7 +77,7 @@ public class AuthDTOs {
                 com.tmd.zkp_rkp.service.crypto.ZkpService.Challenge ch) {
             return new ChallengeResponse(
                     ch.challengeId(),
-                    ch.R().toString(16),
+                    ch.c().toString(16),
                     ch.p().toString(16),
                     ch.q().toString(16),
                     ch.g().toString(16)

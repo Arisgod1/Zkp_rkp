@@ -6,7 +6,7 @@ import com.tmd.zkp_rkp.repository.UserCredentialsRepository;
 import com.tmd.zkp_rkp.service.crypto.ZkpService;
 import com.tmd.zkp_rkp.service.kafka.AuthEventPublisher;
 import com.tmd.zkp_rkp.util.JwtUtil;
-import jakarta.transaction.Transactional;
+import org.springframework.transaction.annotation.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -14,12 +14,10 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.math.BigInteger;
-import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.UUID;
 
 /**
- * @Description
+ * @Description 认证服务 - 实现ZKP零知识证明登录流程
  * @Author Bluegod
  * @Date 2026/1/28
  */
@@ -45,7 +43,7 @@ public class AuthService {
                     BigInteger Y;
                     try {
                         Y = new BigInteger(req.publicKeyY(), 16);
-                        // 可选：验证 Y 在 [2, p-2] 范围内
+                        // 验证 Y 在 [2, p-2] 范围内
                         if (Y.compareTo(BigInteger.TWO) < 0) {
                             return Mono.error(new IllegalArgumentException("Public key too small"));
                         }
@@ -72,10 +70,46 @@ public class AuthService {
                 });
     }
 
+    /**
+     * 创建挑战 - 正确的Schnorr协议流程
+     * 1. 客户端生成随机数 r, 计算 R = g^r mod p
+     * 2. 客户端发送 username 和 R 给服务器
+     * 3. 服务器查询用户公钥 Y
+     * 4. 服务器计算挑战 c = H(R || Y || username)
+     * 5. 服务器存储 challenge 并返回 c 给客户端
+     */
     public Mono<AuthDTOs.ChallengeResponse> createChallenge(AuthDTOs.ChallengeRequest req) {
-        // 即使不存在用户名也生成假挑战（防枚举攻击）
-        return zkpService.generateChallenge(req.username())
-                .map(AuthDTOs.ChallengeResponse::fromServiceRecord)
+        BigInteger clientR;
+        try {
+            clientR = new BigInteger(req.clientR(), 16);
+        } catch (NumberFormatException e) {
+            return Mono.error(new IllegalArgumentException("Invalid R format"));
+        }
+
+        return Mono.fromCallable(() -> userRepo.findByUsername(req.username()))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(optUser -> {
+                    if (optUser.isEmpty()) {
+                        // 用户不存在，生成假挑战（防枚举攻击）
+                        // 使用随机公钥计算假挑战，保持相同的响应时间
+                        BigInteger fakeY = new BigInteger(256, new java.security.SecureRandom());
+                        return zkpService.generateChallenge(req.username(), clientR, fakeY)
+                                .map(challenge -> AuthDTOs.ChallengeResponse.fromServiceRecord(challenge));
+                    }
+
+                    UserCredentials user = optUser.get();
+                    BigInteger Y = user.getPublicKeyYAsBigInteger();
+
+                    return zkpService.generateChallenge(req.username(), clientR, Y)
+                            .map(challenge -> {
+                                log.debug("Challenge phase for user {}: R={}, Y={}, c={}",
+                                    req.username(),
+                                    challenge.clientR().toString(16).substring(0, Math.min(32, challenge.clientR().toString(16).length())),
+                                    Y.toString(16).substring(0, Math.min(32, Y.toString(16).length())),
+                                    challenge.c().toString(16).substring(0, Math.min(32, challenge.c().toString(16).length())));
+                                return AuthDTOs.ChallengeResponse.fromServiceRecord(challenge);
+                            });
+                })
                 .onErrorResume(e -> {
                     log.error("Challenge generation failed", e);
                     return Mono.error(new RuntimeException("Service temporarily unavailable"));
@@ -111,10 +145,17 @@ public class AuthService {
                                             }
 
                                             // Step 4: 更新登录时间并生成 Token
-                                            return Mono.fromRunnable(() ->
-                                                            userRepo.updateLastLoginTime(user.getUsername(), LocalDateTime.now())
-                                                    ).subscribeOn(Schedulers.boundedElastic())
-                                                    .then(eventPublisher.publishLoginSuccess(user.getUsername()))
+                                            // 异步更新登录时间，不阻塞主流程
+                                            Mono.fromRunnable(() -> {
+                                                try {
+                                                    user.setLastLoginAt(LocalDateTime.now());
+                                                    userRepo.save(user);
+                                                } catch (Exception e) {
+                                                    log.warn("Failed to update last login time: {}", e.getMessage());
+                                                }
+                                            }).subscribeOn(Schedulers.boundedElastic()).subscribe();
+                                            
+                                            return eventPublisher.publishLoginSuccess(user.getUsername())
                                                     .thenReturn(generateAuthResponse(user));
                                         });
                             });

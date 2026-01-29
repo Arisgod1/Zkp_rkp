@@ -22,8 +22,8 @@ public class ZkpCryptoConfig {
         Security.addProvider(new BouncyCastleProvider());
     }
 
-    // Schnorr群参数
-    // 暂时硬编码(后期看看动态生成怎么搞)
+    // Schnorr群参数 - RFC 3526 1536-bit MODP Group
+    // P is a safe prime where P = 2Q + 1
     public static final BigInteger P = new BigInteger(
             "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088" +
                     "A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302" +
@@ -32,8 +32,8 @@ public class ZkpCryptoConfig {
                     "CE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F8365" +
                     "5D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC980" +
                     "4F1746C08CA237327FFFFFFFFFFFFFFFF", 16);
-    public static final BigInteger Q = new BigInteger(
-            "7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0", 16);
+    // Q = (P-1)/2 for safe prime P
+    public static final BigInteger Q = P.subtract(BigInteger.ONE).divide(BigInteger.valueOf(2));
     public static final BigInteger G = BigInteger.valueOf(2);
 
     @Bean

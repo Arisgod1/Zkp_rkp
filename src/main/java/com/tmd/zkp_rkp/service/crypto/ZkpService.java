@@ -19,7 +19,12 @@ import static com.tmd.zkp_rkp.common.ZkpValue.CHALLENGE_PREFIX;
 import static com.tmd.zkp_rkp.common.ZkpValue.CHALLENGE_TTL;
 
 /**
- * @Description ZKP算法实现
+ * @Description ZKP算法实现 - 正确的Schnorr协议实现
+ * 协议流程:
+ * 1. 客户端生成随机数 r, 计算 R = g^r mod p, 发送 R 给服务器
+ * 2. 服务器计算挑战 c = H(R || Y || username), 存储 challenge 并返回 c 给客户端
+ * 3. 客户端计算 s = r + c*x mod q, 发送 s 给服务器
+ * 4. 服务器验证 g^s == R * Y^c mod p
  * @Author Bluegod
  * @Date 2026/1/27
  */
@@ -32,34 +37,34 @@ public class ZkpService {
     private final ReactiveStringRedisTemplate redisTemplate;
 
     /**
-     * 为用户生成登录挑战（Challenge Phase）
+     * 生成挑战（Challenge Phase）
+     * 客户端发送 R = g^r, 服务器计算并返回挑战 c = H(R || Y || username)
      */
-    public Mono<Challenge> generateChallenge(String username) {
-        // 生成随机数 r ∈ [1, q-1]
-        BigInteger r;
-        do {
-            r = new BigInteger(group.q().bitLength(), random);
-        } while (r.compareTo(group.q()) >= 0 || r.equals(BigInteger.ZERO));
-
-        // 计算 R = g^r mod p
-        BigInteger R = group.g().modPow(r, group.p());
+    public Mono<Challenge> generateChallenge(String username, BigInteger clientR, BigInteger publicKeyY) {
+        // 验证 R 在合法范围内
+        if (clientR == null || clientR.compareTo(BigInteger.ONE) <= 0 || clientR.compareTo(group.p()) >= 0) {
+            return Mono.error(new IllegalArgumentException("Invalid client R value"));
+        }
 
         String challengeId = UUID.randomUUID().toString();
 
-        // 存储格式: username:r:R (都用十六进制存储大数)
+        // 计算挑战值 c = H(R || Y || username)
+        BigInteger c = computeChallenge(clientR, publicKeyY, username);
+
+        // 存储格式: username:clientR:c (都用十六进制存储大数)
         String storedValue = String.format("%s:%s:%s",
                 username,
-                r.toString(16),
-                R.toString(16)
+                clientR.toString(16),
+                c.toString(16)
         );
 
         return redisTemplate.opsForValue()
                 .set(CHALLENGE_PREFIX + challengeId, storedValue, CHALLENGE_TTL)
-                .thenReturn(new Challenge(challengeId, R, group.p(), group.q(), group.g()));
+                .thenReturn(new Challenge(challengeId, clientR, c, group.p(), group.q(), group.g()));
     }
 
     /**
-     * 根据 challengeId 查找对应的 username（用于后续查询用户公钥）
+     * 根据 challengeId 查找对应的 challenge 数据
      */
     public Mono<ChallengeData> getChallengeData(String challengeId) {
         String key = CHALLENGE_PREFIX + challengeId;
@@ -72,16 +77,41 @@ public class ZkpService {
                     }
 
                     String username = parts[0];
-                    BigInteger r = new BigInteger(parts[1], 16);
-                    BigInteger R = new BigInteger(parts[2], 16);
+                    BigInteger clientR = new BigInteger(parts[1], 16);
+                    BigInteger c = new BigInteger(parts[2], 16);
 
-                    return Mono.just(new ChallengeData(username, r, R));
+                    return Mono.just(new ChallengeData(username, clientR, c));
                 })
                 .switchIfEmpty(Mono.error(new IllegalStateException("Challenge expired or not found")));
     }
 
     /**
+     * 计算挑战值 c = H(R || Y || username)
+     * 使用十六进制字符串进行哈希，确保与客户端一致
+     */
+    public BigInteger computeChallenge(BigInteger R, BigInteger Y, String username) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            // 使用十六进制字符串进行哈希，与客户端保持一致
+            String rHex = R.toString(16);
+            String yHex = Y.toString(16);
+            log.debug("Computing challenge with R(hex)={}, Y(hex)={}, username={}", rHex.substring(0, Math.min(32, rHex.length())), yHex.substring(0, Math.min(32, yHex.length())), username);
+            digest.update(rHex.getBytes(StandardCharsets.UTF_8));
+            digest.update(yHex.getBytes(StandardCharsets.UTF_8));
+            digest.update(username.getBytes(StandardCharsets.UTF_8));
+            byte[] hash = digest.digest();
+            BigInteger c = new BigInteger(1, hash).mod(group.q());
+            log.debug("Computed c={}", c.toString(16).substring(0, Math.min(32, c.toString(16).length())));
+            return c;
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 not available", e);
+        }
+    }
+
+    /**
      * 验证零知识证明（Verification Phase）
+     * 验证方程: g^s == R * Y^c (mod p)
+     * 其中 c = H(R || Y || username) - 使用存储的c值，不再重新计算
      */
     public Mono<Boolean> verifyProof(String challengeId, SchnorrProof proof, BigInteger publicKeyY) {
         return redisTemplate.opsForValue().get(CHALLENGE_PREFIX + challengeId)
@@ -92,8 +122,8 @@ public class ZkpService {
                     }
 
                     String storedUsername = parts[0];
-                    BigInteger r = new BigInteger(parts[1], 16);
-                    BigInteger R = new BigInteger(parts[2], 16);
+                    BigInteger R = new BigInteger(parts[1], 16);
+                    BigInteger c = new BigInteger(parts[2], 16);
 
                     // 验证 clientR 是否匹配服务器存储的 R（防止篡改）
                     if (!R.equals(proof.clientR())) {
@@ -101,8 +131,13 @@ public class ZkpService {
                         return Mono.just(false);
                     }
 
-                    // 计算 challenge c = H(R || Y || username)
-                    BigInteger c = hashChallenge(proof.clientR(), publicKeyY, storedUsername);
+                    // 验证用户名匹配
+                    if (!storedUsername.equals(proof.username())) {
+                        log.warn("Username mismatch for challenge {}", challengeId);
+                        return Mono.just(false);
+                    }
+
+                    // 使用存储的 c 值进行验证（不再重新计算，确保一致性）
 
                     // Schnorr 验证方程: g^s == R * Y^c (mod p)
                     BigInteger leftSide = group.g().modPow(proof.s(), group.p());
@@ -110,6 +145,16 @@ public class ZkpService {
                     BigInteger rightSide = proof.clientR().multiply(Yc).mod(group.p());
 
                     boolean valid = leftSide.equals(rightSide);
+
+                    // Debug logging
+                    log.debug("ZKP Verification Debug for user: {}", storedUsername);
+                    log.debug("  R (stored): {}", R.toString(16).substring(0, 32) + "...");
+                    log.debug("  Y: {}", publicKeyY.toString(16).substring(0, 32) + "...");
+                    log.debug("  c (stored): {}", c.toString(16).substring(0, 32) + "...");
+                    log.debug("  s: {}", proof.s().toString(16).substring(0, 32) + "...");
+                    log.debug("  leftSide (g^s): {}", leftSide.toString(16).substring(0, 32) + "...");
+                    log.debug("  rightSide (R*Y^c): {}", rightSide.toString(16).substring(0, 32) + "...");
+                    log.debug("  valid: {}", valid);
 
                     if (valid) {
                         log.debug("ZKP verified for user: {}", storedUsername);
@@ -124,21 +169,8 @@ public class ZkpService {
                 .switchIfEmpty(Mono.error(new IllegalStateException("Challenge expired or not found")));
     }
 
-    private BigInteger hashChallenge(BigInteger R, BigInteger Y, String username) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            digest.update(R.toByteArray());
-            digest.update(Y.toByteArray());
-            digest.update(username.getBytes(StandardCharsets.UTF_8));
-            byte[] hash = digest.digest();
-            return new BigInteger(1, hash).mod(group.q());
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-256 not available", e);
-        }
-    }
-
     // 记录定义
-    public record Challenge(String challengeId, BigInteger R, BigInteger p, BigInteger q, BigInteger g) {}
-    public record SchnorrProof(BigInteger s, BigInteger clientR) {}
-    public record ChallengeData(String username, BigInteger r, BigInteger R) {}
+    public record Challenge(String challengeId, BigInteger clientR, BigInteger c, BigInteger p, BigInteger q, BigInteger g) {}
+    public record SchnorrProof(BigInteger s, BigInteger clientR, String username) {}
+    public record ChallengeData(String username, BigInteger clientR, BigInteger c) {}
 }

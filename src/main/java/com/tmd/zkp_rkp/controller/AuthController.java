@@ -54,15 +54,4 @@ public class AuthController {
                         Mono.just(ResponseEntity.status(HttpStatus.BAD_REQUEST).build())
                 );
     }
-
-    // 全局错误处理
-    @ExceptionHandler(Exception.class)
-    public ResponseEntity<AuthDTOs.ErrorResponse> handleException(Exception ex) {
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(new AuthDTOs.ErrorResponse(
-                        "INTERNAL_ERROR",
-                        "An unexpected error occurred",
-                        Instant.now().getEpochSecond()
-                ));
-    }
 }

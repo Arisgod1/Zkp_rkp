@@ -1,0 +1,70 @@
+spring:
+  application:
+    name: zkp_rkp_test
+
+  # 数据源配置 - 使用Docker中的PostgreSQL
+  datasource:
+    url: jdbc:postgresql://localhost:5432/zk_auth
+    username: zkuser
+    password: zkpass_1314217
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 2
+      connection-timeout: 20000
+
+  # JPA配置
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+
+  # Redis配置 - 使用Docker中的单节点Redis
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      lettuce:
+        pool:
+          max-active: 4
+          max-idle: 4
+          min-idle: 1
+      timeout: 2000ms
+
+  # Kafka配置 - 使用Docker中的Kafka
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      acks: all
+      retries: 3
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        enable.idempotence: true
+    consumer:
+      group-id: zkp-test-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
+
+# 服务器配置
+server:
+  port: 0  # 随机端口，避免冲突
+
+# 日志配置
+logging:
+  level:
+    com.tmd.zkp_rkp: DEBUG
+    org.springframework.web: DEBUG
+    org.hibernate.SQL: DEBUG
+
+# JWT配置
+jwt:
+  secret: test-secret-key-for-jwt-signing-only-used-in-tests-do-not-use-in-production
+  expiration: 86400  # 24小时

@@ -4,34 +4,27 @@ import com.tmd.zkp_rkp.dto.AuthDTOs;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.validation.FieldError;
-import org.springframework.web.bind.MethodArgumentNotValidException;
-import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.server.ServerWebInputException;
 
 import java.time.Instant;
-import java.util.stream.Collectors;
 
 /**
- * @Description
+ * 全局异常处理 - WebFlux版本
  * @Author Bluegod
  * @Date 2026/1/28
  */
 @Slf4j
-@ControllerAdvice
+@RestControllerAdvice
 public class GlobalExceptionHandler {
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<AuthDTOs.ErrorResponse> handleValidationExceptions(
-            MethodArgumentNotValidException ex) {
 
-        String errors = ex.getBindingResult().getFieldErrors().stream()
-                .map(FieldError::getDefaultMessage)
-                .collect(Collectors.joining(", "));
-
+    @ExceptionHandler(ServerWebInputException.class)
+    public ResponseEntity<AuthDTOs.ErrorResponse> handleServerWebInputException(ServerWebInputException ex) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(new AuthDTOs.ErrorResponse(
-                        "VALIDATION_ERROR",
-                        errors,
+                        "BAD_REQUEST",
+                        "Invalid request: " + ex.getReason(),
                         Instant.now().getEpochSecond()
                 ));
     }

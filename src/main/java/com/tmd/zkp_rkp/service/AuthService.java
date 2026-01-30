@@ -1,11 +1,13 @@
 package com.tmd.zkp_rkp.service;
 
+import com.tmd.zkp_rkp.config.ZkpCryptoConfig;
 import com.tmd.zkp_rkp.dto.AuthDTOs;
 import com.tmd.zkp_rkp.entity.UserCredentials;
 import com.tmd.zkp_rkp.repository.UserCredentialsRepository;
 import com.tmd.zkp_rkp.service.crypto.ZkpService;
 import com.tmd.zkp_rkp.service.kafka.AuthEventPublisher;
 import com.tmd.zkp_rkp.util.JwtUtil;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -14,7 +16,10 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.math.BigInteger;
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
+
+import static com.tmd.zkp_rkp.common.ZkpValue.P;
 
 /**
  * @Description 认证服务 - 实现ZKP零知识证明登录流程
@@ -29,7 +34,8 @@ public class AuthService {
     private final ZkpService zkpService;
     private final AuthEventPublisher eventPublisher;
     private final JwtUtil jwtUtil;
-
+    @Autowired
+    private ZkpCryptoConfig cryptoConfig;
     @Transactional
     public Mono<Void> register(AuthDTOs.RegisterRequest req) {
         return Mono.fromCallable(() -> userRepo.existsByUsername(req.username()))
@@ -44,6 +50,9 @@ public class AuthService {
                     try {
                         Y = new BigInteger(req.publicKeyY(), 16);
                         // 验证 Y 在 [2, p-2] 范围内
+                        if (Y.compareTo(P.subtract(BigInteger.ONE)) >= 0) {
+                            return Mono.error(new IllegalArgumentException("Public key too large"));
+                        }
                         if (Y.compareTo(BigInteger.TWO) < 0) {
                             return Mono.error(new IllegalArgumentException("Public key too small"));
                         }
@@ -92,7 +101,9 @@ public class AuthService {
                     if (optUser.isEmpty()) {
                         // 用户不存在，生成假挑战（防枚举攻击）
                         // 使用随机公钥计算假挑战，保持相同的响应时间
-                        BigInteger fakeY = new BigInteger(256, new java.security.SecureRandom());
+                        BigInteger fakeY = new BigInteger(1536, new SecureRandom())
+                                .mod(P.subtract(BigInteger.TWO))
+                                .add(BigInteger.TWO);
                         return zkpService.generateChallenge(req.username(), clientR, fakeY)
                                 .map(challenge -> AuthDTOs.ChallengeResponse.fromServiceRecord(challenge));
                     }
@@ -103,10 +114,10 @@ public class AuthService {
                     return zkpService.generateChallenge(req.username(), clientR, Y)
                             .map(challenge -> {
                                 log.debug("Challenge phase for user {}: R={}, Y={}, c={}",
-                                    req.username(),
-                                    challenge.clientR().toString(16).substring(0, Math.min(32, challenge.clientR().toString(16).length())),
-                                    Y.toString(16).substring(0, Math.min(32, Y.toString(16).length())),
-                                    challenge.c().toString(16).substring(0, Math.min(32, challenge.c().toString(16).length())));
+                                        req.username(),
+                                        challenge.clientR().toString(16).substring(0, Math.min(32, challenge.clientR().toString(16).length())),
+                                        Y.toString(16).substring(0, Math.min(32, Y.toString(16).length())),
+                                        challenge.c().toString(16).substring(0, Math.min(32, challenge.c().toString(16).length())));
                                 return AuthDTOs.ChallengeResponse.fromServiceRecord(challenge);
                             });
                 })
@@ -154,7 +165,7 @@ public class AuthService {
                                                     log.warn("Failed to update last login time: {}", e.getMessage());
                                                 }
                                             }).subscribeOn(Schedulers.boundedElastic()).subscribe();
-                                            
+
                                             return eventPublisher.publishLoginSuccess(user.getUsername())
                                                     .thenReturn(generateAuthResponse(user));
                                         });
